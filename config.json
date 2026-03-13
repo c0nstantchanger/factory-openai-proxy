@@ -1,0 +1,28 @@
+{
+  "port": 4011,
+  "model_redirects": {},
+  "endpoints": {
+    "openai": "https://api.factory.ai/api/llm/o/v1/responses",
+    "anthropic": "https://api.factory.ai/api/llm/a/v1/messages",
+    "common": "https://api.factory.ai/api/llm/o/v1/chat/completions"
+  },
+  "models": [
+    { "id": "claude-opus-4-6", "type": "anthropic", "reasoning": "auto", "provider": "anthropic" },
+    { "id": "claude-opus-4-5-20251101", "type": "anthropic", "reasoning": "auto", "provider": "anthropic" },
+    { "id": "claude-sonnet-4-6", "type": "anthropic", "reasoning": "auto", "provider": "anthropic" },
+    { "id": "claude-sonnet-4-5-20250929", "type": "anthropic", "reasoning": "auto", "provider": "anthropic" },
+    { "id": "claude-haiku-4-5-20251001", "type": "anthropic", "reasoning": "auto", "provider": "anthropic" },
+    { "id": "gpt-5.2", "type": "openai", "reasoning": "auto", "provider": "openai" },
+    { "id": "gpt-5.2-codex", "type": "openai", "reasoning": "auto", "provider": "openai" },
+    { "id": "gpt-5.4", "type": "openai", "reasoning": "auto", "provider": "openai" },
+    { "id": "gpt-5.3-codex", "type": "openai", "reasoning": "auto", "provider": "openai" },
+    { "id": "gemini-3.1-pro-preview", "type": "common", "reasoning": "auto", "provider": "google" },
+    { "id": "gemini-3-flash-preview", "type": "common", "reasoning": "auto", "provider": "google" },
+    { "id": "glm-4.7", "type": "common", "reasoning": "off", "provider": "fireworks" },
+    { "id": "glm-5", "type": "common", "reasoning": "off", "provider": "fireworks" },
+    { "id": "kimi-k2.5", "type": "common", "reasoning": "off", "provider": "fireworks" },
+    { "id": "minimax-m2.5", "type": "common", "reasoning": "auto", "provider": "fireworks" }
+  ],
+  "system_prompt": "",
+  "user_agent": "factory-cli/0.74.0"
+}
