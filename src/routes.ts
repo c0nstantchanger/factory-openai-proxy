@@ -378,14 +378,72 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
     const isStreaming = anthropicRequest.stream === true;
     const headers = getAnthropicHeaders(authHeader, req.headers, isStreaming, modelId, provider);
 
-    // Inject system prompt
+    // Inject system prompt into first user message (not the `system` parameter,
+    // which Factory.ai rejects with fk- API keys).
     const systemPrompt = getSystemPrompt();
     const modifiedRequest = { ...anthropicRequest, model: modelId };
     if (systemPrompt) {
-      if (modifiedRequest.system && Array.isArray(modifiedRequest.system)) {
-        modifiedRequest.system = [{ type: "text", text: systemPrompt }, ...modifiedRequest.system];
+      // Merge any existing system content with the config system prompt
+      const existingSystem = modifiedRequest.system;
+      const allParts: string[] = [systemPrompt];
+      if (existingSystem) {
+        if (typeof existingSystem === "string") {
+          allParts.push(existingSystem);
+        } else if (Array.isArray(existingSystem)) {
+          for (const part of existingSystem) {
+            if (typeof part === "string") allParts.push(part);
+            else if (part?.text) allParts.push(part.text);
+          }
+        }
+      }
+      delete modifiedRequest.system;
+
+      const systemText = allParts.join("\n\n");
+      if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
+        const firstContent = modifiedRequest.messages[0].content;
+        if (typeof firstContent === "string") {
+          modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, { type: "text", text: firstContent }];
+        } else if (Array.isArray(firstContent)) {
+          modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, ...firstContent];
+        }
       } else {
-        modifiedRequest.system = [{ type: "text", text: systemPrompt }];
+        modifiedRequest.messages = [
+          { role: "user", content: [{ type: "text", text: systemText }] },
+          ...(modifiedRequest.messages || []),
+        ];
+      }
+    } else {
+      // Even without a config system prompt, strip any client-provided `system`
+      // to avoid 403 from Factory.ai. Inline it instead.
+      if (modifiedRequest.system) {
+        const existingSystem = modifiedRequest.system;
+        const parts: string[] = [];
+        if (typeof existingSystem === "string") {
+          parts.push(existingSystem);
+        } else if (Array.isArray(existingSystem)) {
+          for (const part of existingSystem) {
+            if (typeof part === "string") parts.push(part);
+            else if (part?.text) parts.push(part.text);
+          }
+        }
+        delete modifiedRequest.system;
+
+        if (parts.length > 0) {
+          const systemText = parts.join("\n\n");
+          if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
+            const firstContent = modifiedRequest.messages[0].content;
+            if (typeof firstContent === "string") {
+              modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, { type: "text", text: firstContent }];
+            } else if (Array.isArray(firstContent)) {
+              modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, ...firstContent];
+            }
+          } else {
+            modifiedRequest.messages = [
+              { role: "user", content: [{ type: "text", text: systemText }] },
+              ...(modifiedRequest.messages || []),
+            ];
+          }
+        }
       }
     }
 

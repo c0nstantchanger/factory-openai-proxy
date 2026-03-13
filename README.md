@@ -113,3 +113,7 @@ Each model has a `reasoning` setting in `config.json`:
 - `"auto"` — preserves whatever the client sends (reasoning/thinking fields passed through)
 - `"low"` / `"medium"` / `"high"` / `"xhigh"` — overrides client with specific reasoning level
 - `"off"` — strips reasoning/thinking fields from requests
+
+### System prompt handling
+
+> **Warning:** Factory.ai returns **403 Forbidden** when the Anthropic `system` parameter is present in requests using `fk-` API keys. This proxy works around this by inlining system content into the first user message instead of using the `system` parameter. The behavior is functionally equivalent, but be aware that system instructions will appear as part of the user message in the conversation rather than as a separate system block.

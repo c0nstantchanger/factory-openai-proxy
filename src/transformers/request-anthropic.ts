@@ -78,18 +78,33 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
     }
   }
 
-  anthropicRequest.messages = messages;
-
-  // Add system parameter with system prompt prepended
+  // Merge system content (from config + client system messages) into the first user message.
+  // Factory.ai rejects the Anthropic `system` parameter with fk- API keys (returns 403),
+  // so we prepend it as text in the first user message instead.
   const systemPrompt = getSystemPrompt();
-  if (systemPrompt || systemContent.length > 0) {
-    const system: Array<Record<string, unknown>> = [];
-    if (systemPrompt) {
-      system.push({ type: "text", text: systemPrompt });
-    }
-    system.push(...systemContent);
-    anthropicRequest.system = system;
+  const allSystemParts: Array<Record<string, unknown>> = [];
+  if (systemPrompt) {
+    allSystemParts.push({ type: "text", text: systemPrompt });
   }
+  allSystemParts.push(...systemContent);
+
+  if (allSystemParts.length > 0) {
+    const systemText = allSystemParts
+      .map((p) => (p as { text?: string }).text || "")
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (messages.length > 0 && (messages[0] as { role: string }).role === "user") {
+      // Prepend system text to existing first user message
+      const firstMsg = messages[0] as { role: string; content: Array<Record<string, unknown>> };
+      firstMsg.content = [{ type: "text", text: systemText }, ...firstMsg.content];
+    } else {
+      // Insert a new user message at the front with the system text
+      messages.unshift({ role: "user", content: [{ type: "text", text: systemText }] });
+    }
+  }
+
+  anthropicRequest.messages = messages;
 
   // Transform tools (OpenAI function format -> Anthropic format)
   if (openaiRequest.tools && Array.isArray(openaiRequest.tools)) {
