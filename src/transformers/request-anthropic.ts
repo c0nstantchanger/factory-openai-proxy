@@ -206,13 +206,15 @@ export function getAnthropicHeaders(
     headers["anthropic-beta"] = betaValues.join(", ");
   }
 
+  headers["x-client-version"] = (clientHeaders["x-client-version"] as string) || "0.74.0";
+
   const stainlessDefaults: Record<string, string> = {
     "x-stainless-arch": "x64",
     "x-stainless-lang": "js",
-    "x-stainless-os": "MacOS",
+    "x-stainless-os": "Linux",
     "x-stainless-runtime": "node",
     "x-stainless-retry-count": "0",
-    "x-stainless-package-version": "0.57.0",
+    "x-stainless-package-version": "0.70.1",
     "x-stainless-runtime-version": "v24.3.0",
   };
 

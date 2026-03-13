@@ -96,10 +96,10 @@ export function getCommonHeaders(
   const stainlessDefaults: Record<string, string> = {
     "x-stainless-arch": "x64",
     "x-stainless-lang": "js",
-    "x-stainless-os": "MacOS",
+    "x-stainless-os": "Linux",
     "x-stainless-runtime": "node",
     "x-stainless-retry-count": "0",
-    "x-stainless-package-version": "5.23.2",
+    "x-stainless-package-version": "0.70.1",
     "x-stainless-runtime-version": "v24.3.0",
   };
 
