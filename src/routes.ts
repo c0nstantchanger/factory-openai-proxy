@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { sanitizeText } from "./transformers/sanitize.js";
 import {
   getConfig,
   getModelById,
@@ -381,6 +382,8 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
 
     // Inject system prompt into first user message (not the `system` parameter,
     // which Factory.ai rejects with fk- API keys).
+    // IMPORTANT: Factory.ai also rejects multiple text parts in a content array,
+    // so everything must be merged into a single text block.
     const systemPrompt = getSystemPrompt();
     const modifiedRequest = { ...anthropicRequest, model: modelId };
     if (systemPrompt) {
@@ -399,14 +402,15 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
       }
       delete modifiedRequest.system;
 
-      const systemText = allParts.join("\n\n");
+      const systemText = sanitizeText(allParts.join("\n\n"));
       if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
         const firstContent = modifiedRequest.messages[0].content;
-        if (typeof firstContent === "string") {
-          modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, { type: "text", text: firstContent }];
-        } else if (Array.isArray(firstContent)) {
-          modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, ...firstContent];
-        }
+        const userText = typeof firstContent === "string"
+          ? firstContent
+          : Array.isArray(firstContent)
+            ? firstContent.map((p: { text?: string }) => p.text || "").filter(Boolean).join("\n\n")
+            : "";
+        modifiedRequest.messages[0].content = [{ type: "text", text: systemText + "\n\n" + userText }];
       } else {
         modifiedRequest.messages = [
           { role: "user", content: [{ type: "text", text: systemText }] },
@@ -430,14 +434,15 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
         delete modifiedRequest.system;
 
         if (parts.length > 0) {
-          const systemText = parts.join("\n\n");
+          const systemText = sanitizeText(parts.join("\n\n"));
           if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
             const firstContent = modifiedRequest.messages[0].content;
-            if (typeof firstContent === "string") {
-              modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, { type: "text", text: firstContent }];
-            } else if (Array.isArray(firstContent)) {
-              modifiedRequest.messages[0].content = [{ type: "text", text: systemText }, ...firstContent];
-            }
+            const userText = typeof firstContent === "string"
+              ? firstContent
+              : Array.isArray(firstContent)
+                ? firstContent.map((p: { text?: string }) => p.text || "").filter(Boolean).join("\n\n")
+                : "";
+            modifiedRequest.messages[0].content = [{ type: "text", text: systemText + "\n\n" + userText }];
           } else {
             modifiedRequest.messages = [
               { role: "user", content: [{ type: "text", text: systemText }] },
@@ -467,10 +472,11 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
       delete modifiedRequest.thinking;
     }
 
+    const outBodyMessages = JSON.stringify(modifiedRequest);
     const response = await fetch(endpointUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify(modifiedRequest),
+      body: outBodyMessages,
     });
 
     if (!response.ok) {

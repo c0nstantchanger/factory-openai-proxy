@@ -1,4 +1,5 @@
 import { getSystemPrompt, getModelReasoning, getUserAgent } from "../config.js";
+import { sanitizeText } from "./sanitize.js";
 import type { IncomingHttpHeaders } from "http";
 
 interface OpenAIChatRequest {
@@ -89,15 +90,21 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   allSystemParts.push(...systemContent);
 
   if (allSystemParts.length > 0) {
-    const systemText = allSystemParts
+    const systemText = sanitizeText(allSystemParts
       .map((p) => (p as { text?: string }).text || "")
       .filter(Boolean)
-      .join("\n\n");
+      .join("\n\n"));
 
     if (messages.length > 0 && (messages[0] as { role: string }).role === "user") {
-      // Prepend system text to existing first user message
+      // Merge system text into the first user message as a single text block.
+      // Factory.ai rejects requests with multiple text parts in a content array,
+      // so we must concatenate everything into one string.
       const firstMsg = messages[0] as { role: string; content: Array<Record<string, unknown>> };
-      firstMsg.content = [{ type: "text", text: systemText }, ...firstMsg.content];
+      const existingText = firstMsg.content
+        .map((p) => (p as { text?: string }).text || "")
+        .filter(Boolean)
+        .join("\n\n");
+      firstMsg.content = [{ type: "text", text: systemText + "\n\n" + existingText }];
     } else {
       // Insert a new user message at the front with the system text
       messages.unshift({ role: "user", content: [{ type: "text", text: systemText }] });
