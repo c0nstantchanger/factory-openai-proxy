@@ -9,11 +9,6 @@
  * Target format: data: {"id":"chatcmpl-...","object":"chat.completion.chunk",...}\n\n
  */
 
-interface SSEParsed {
-  type: "event" | "data";
-  value: string | Record<string, unknown>;
-}
-
 export class OpenAIResponseTransformer {
   private model: string;
   private requestId: string;
@@ -25,22 +20,7 @@ export class OpenAIResponseTransformer {
     this.created = Math.floor(Date.now() / 1000);
   }
 
-  private parseSSELine(line: string): SSEParsed | null {
-    if (line.startsWith("event:")) {
-      return { type: "event", value: line.slice(6).trim() };
-    }
-    if (line.startsWith("data:")) {
-      const dataStr = line.slice(5).trim();
-      try {
-        return { type: "data", value: JSON.parse(dataStr) };
-      } catch {
-        return { type: "data", value: dataStr };
-      }
-    }
-    return null;
-  }
-
-  private transformEvent(eventType: string, eventData: Record<string, unknown>): string | null {
+  transformEvent(eventType: string, eventData: Record<string, unknown>): string | null {
     if (eventType === "response.created") {
       return this.createChunk("", "assistant", false);
     }
@@ -97,33 +77,6 @@ export class OpenAIResponseTransformer {
 
   private createDone(): string {
     return "data: [DONE]\n\n";
-  }
-
-  async *transformStream(sourceStream: AsyncIterable<Uint8Array | Buffer>): AsyncGenerator<string> {
-    let buffer = "";
-    let currentEvent: string | null = null;
-
-    for await (const chunk of sourceStream) {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-
-        const parsed = this.parseSSELine(line);
-        if (!parsed) continue;
-
-        if (parsed.type === "event") {
-          currentEvent = parsed.value as string;
-        } else if (parsed.type === "data" && currentEvent) {
-          const transformed = this.transformEvent(currentEvent, parsed.value as Record<string, unknown>);
-          if (transformed) {
-            yield transformed;
-          }
-        }
-      }
-    }
   }
 }
 

@@ -10,11 +10,6 @@
  * Target format: data: {"id":"chatcmpl-...","object":"chat.completion.chunk",...}\n\n
  */
 
-interface SSEParsed {
-  type: "event" | "data";
-  value: string | Record<string, unknown>;
-}
-
 export class AnthropicResponseTransformer {
   private model: string;
   private requestId: string;
@@ -26,22 +21,7 @@ export class AnthropicResponseTransformer {
     this.created = Math.floor(Date.now() / 1000);
   }
 
-  private parseSSELine(line: string): SSEParsed | null {
-    if (line.startsWith("event:")) {
-      return { type: "event", value: line.slice(6).trim() };
-    }
-    if (line.startsWith("data:")) {
-      const dataStr = line.slice(5).trim();
-      try {
-        return { type: "data", value: JSON.parse(dataStr) };
-      } catch {
-        return { type: "data", value: dataStr };
-      }
-    }
-    return null;
-  }
-
-  private transformEvent(eventType: string, eventData: Record<string, unknown>): string | null {
+  transformEvent(eventType: string, eventData: Record<string, unknown>): string | null {
     if (eventType === "message_start") {
       const message = eventData.message as Record<string, unknown> | undefined;
       if (message?.id) {
@@ -117,32 +97,46 @@ export class AnthropicResponseTransformer {
     };
     return mapping[anthropicReason] || "stop";
   }
+}
 
-  async *transformStream(sourceStream: AsyncIterable<Uint8Array | Buffer>): AsyncGenerator<string> {
-    let buffer = "";
-    let currentEvent: string | null = null;
+/**
+ * Convert a non-streaming Anthropic Messages API response to OpenAI chat.completion format.
+ */
+export function convertAnthropicToChatCompletion(resp: Record<string, unknown>): Record<string, unknown> {
+  const content = resp.content as Array<Record<string, unknown>> | undefined;
+  const textBlocks = content?.filter((c) => c.type === "text") || [];
+  const textContent = textBlocks.map((c) => c.text as string).join("");
 
-    for await (const chunk of sourceStream) {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+  const stopReason = resp.stop_reason as string | undefined;
+  const stopReasonMap: Record<string, string> = {
+    end_turn: "stop",
+    max_tokens: "length",
+    stop_sequence: "stop",
+    tool_use: "tool_calls",
+  };
+  const finishReason = stopReason ? (stopReasonMap[stopReason] || "stop") : "stop";
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
+  const usage = resp.usage as Record<string, number> | undefined;
 
-        const parsed = this.parseSSELine(line);
-        if (!parsed) continue;
-
-        if (parsed.type === "event") {
-          currentEvent = parsed.value as string;
-        } else if (parsed.type === "data" && currentEvent) {
-          const transformed = this.transformEvent(currentEvent, parsed.value as Record<string, unknown>);
-          if (transformed) {
-            yield transformed;
-          }
-          currentEvent = null;
-        }
-      }
-    }
-  }
+  return {
+    id: resp.id ? `chatcmpl-${(resp.id as string).replace(/^msg_/, "")}` : `chatcmpl-${Date.now()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: (resp.model as string) || "unknown-model",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: (resp.role as string) || "assistant",
+          content: textContent || "",
+        },
+        finish_reason: finishReason,
+      },
+    ],
+    usage: {
+      prompt_tokens: usage?.input_tokens ?? 0,
+      completion_tokens: usage?.output_tokens ?? 0,
+      total_tokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
+    },
+  };
 }

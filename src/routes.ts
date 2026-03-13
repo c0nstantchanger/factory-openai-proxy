@@ -13,7 +13,7 @@ import { getApiKey } from "./auth.js";
 import { transformToAnthropic, getAnthropicHeaders } from "./transformers/request-anthropic.js";
 import { transformToOpenAI, getOpenAIHeaders } from "./transformers/request-openai.js";
 import { transformToCommon, getCommonHeaders } from "./transformers/request-common.js";
-import { AnthropicResponseTransformer } from "./transformers/response-anthropic.js";
+import { AnthropicResponseTransformer, convertAnthropicToChatCompletion } from "./transformers/response-anthropic.js";
 import {
   OpenAIResponseTransformer,
   convertResponseToChatCompletion,
@@ -152,19 +152,38 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
             return;
           }
 
-          // Create an async iterable from the ReadableStream reader
-          const streamIterable = {
-            async *[Symbol.asyncIterator]() {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                yield value;
-              }
-            },
-          };
+          let sseBuffer = "";
+          let currentEvent: string | null = null;
 
-          for await (const chunk of transformer.transformStream(streamIterable)) {
-            res.write(chunk);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            sseBuffer += Buffer.from(value).toString();
+            const lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+
+              if (line.startsWith("event:")) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.startsWith("data:") && currentEvent) {
+                const dataStr = line.slice(5).trim();
+                let eventData: Record<string, unknown> = {};
+                try {
+                  eventData = JSON.parse(dataStr);
+                } catch {
+                  currentEvent = null;
+                  continue;
+                }
+                const transformed = transformer.transformEvent(currentEvent, eventData);
+                if (transformed) {
+                  res.write(transformed);
+                }
+                currentEvent = null;
+              }
+            }
           }
         } catch (streamError) {
           console.error("[ROUTES] Stream error:", streamError);
@@ -181,7 +200,15 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
         } catch {
           res.json(data);
         }
+      } else if (model.type === "anthropic") {
+        try {
+          const converted = convertAnthropicToChatCompletion(data);
+          res.json(converted);
+        } catch {
+          res.json(data);
+        }
       } else {
+        // common type: already in chat completion format
         res.json(data);
       }
     }
