@@ -96,10 +96,11 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
       return;
     }
 
+    const outBody = JSON.stringify(transformedRequest);
     const response = await fetch(endpointUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify(transformedRequest),
+      body: outBody,
     });
 
     console.log(`[ROUTES] Response status: ${response.status}`);
