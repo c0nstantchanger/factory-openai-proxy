@@ -4,7 +4,7 @@ services:
     container_name: factory-openai-proxy
     restart: unless-stopped
     ports:
-      - "${PORT:-4011}:4011"
+      - "127.0.0.1:${PORT:-4011}:4011"
     environment:
       - FACTORY_API_KEY=${FACTORY_API_KEY}
       - DROID_REFRESH_KEY=${DROID_REFRESH_KEY:-}
