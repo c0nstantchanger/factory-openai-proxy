@@ -10,6 +10,19 @@ TypeScript rewrite of [droid2api](https://github.com/1e0n/droid2api), running on
 bun install
 ```
 
+### Docker
+
+```bash
+# Build and run with docker compose
+FACTORY_API_KEY=your-key docker compose up -d
+
+# Or build manually
+docker build -t factory-openai-proxy .
+docker run -d -p 4011:4011 -e FACTORY_API_KEY=your-key factory-openai-proxy
+```
+
+The `config.json` is bind-mounted by default in the compose setup, so you can edit it without rebuilding.
+
 ## Configuration
 
 Edit `config.json` to configure:
