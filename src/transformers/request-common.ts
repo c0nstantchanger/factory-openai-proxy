@@ -1,5 +1,4 @@
 import { getSystemPrompt, getUserAgent, getModelReasoning } from "../config.js";
-import { sanitizeText } from "./sanitize.js";
 import type { IncomingHttpHeaders } from "http";
 
 interface OpenAIChatRequest {
@@ -17,47 +16,17 @@ export function transformToCommon(openaiRequest: OpenAIChatRequest): Record<stri
   if (commonRequest.messages && Array.isArray(commonRequest.messages)) {
     const messages = [...(commonRequest.messages as Array<{ role: string; content: string | unknown[] }>)];
 
-    // Extract all system role messages and strip them out.
-    // Factory.ai rejects `system` role messages on the common (OpenAI) endpoint with fk- keys,
-    // so we collect all system content and inline it into the first user message.
-    const systemParts: string[] = [];
-    if (systemPrompt) systemParts.push(systemPrompt);
-
-    const nonSystemMessages = messages.filter((m) => {
-      if (m.role === "system") {
-        if (typeof m.content === "string") systemParts.push(m.content);
-        else if (Array.isArray(m.content)) {
-          for (const part of m.content as Array<{ type: string; text?: string }>) {
-            if (part.text) systemParts.push(part.text);
-          }
-        }
-        return false;
-      }
-      return true;
-    });
-
-    if (systemParts.length > 0) {
-      const systemText = sanitizeText(systemParts.join("\n\n"));
-      const firstUserIdx = nonSystemMessages.findIndex((m) => m.role === "user");
-      if (firstUserIdx >= 0) {
-        const firstUser = nonSystemMessages[firstUserIdx];
-        const existingText = typeof firstUser.content === "string"
-          ? firstUser.content
-          : Array.isArray(firstUser.content)
-            ? (firstUser.content as Array<{ text?: string }>).map((p) => p.text || "").filter(Boolean).join("\n\n")
-            : "";
-        nonSystemMessages[firstUserIdx] = {
-          ...firstUser,
-          content: systemText + "\n\n" + existingText,
-        };
-      } else {
-        nonSystemMessages.unshift({ role: "user", content: systemText });
+    if (systemPrompt) {
+      // Prepend config system prompt as a system message if not already present
+      const hasSystem = messages.some((m) => m.role === "system");
+      if (!hasSystem) {
+        messages.unshift({ role: "system", content: systemPrompt });
       }
     }
 
-    commonRequest.messages = nonSystemMessages;
+    commonRequest.messages = messages;
   } else if (systemPrompt) {
-    commonRequest.messages = [{ role: "user", content: systemPrompt }, ...((commonRequest.messages as unknown[]) || [])];
+    commonRequest.messages = [{ role: "system", content: systemPrompt }, ...((commonRequest.messages as unknown[]) || [])];
   }
 
   // Handle reasoning_effort based on model config

@@ -6,7 +6,8 @@ services:
     ports:
       - "127.0.0.1:${PORT:-4011}:4011"
     environment:
-      - FACTORY_API_KEY=${FACTORY_API_KEY}
+      - FACTORY_API_KEY=${FACTORY_API_KEY:-}
       - DROID_REFRESH_KEY=${DROID_REFRESH_KEY:-}
     volumes:
       - ./config.json:/app/config.json:ro
+      - ${HOME}/.factory:/root/.factory

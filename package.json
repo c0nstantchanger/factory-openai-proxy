@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "bun run src/server.ts",
     "start": "bun run src/server.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "diff:newnewmessages": "bun run src/tools/diff-captured-anthropic.ts"
   },
   "dependencies": {
     "express": "^5.1.0"
@@ -14,6 +15,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/express": "^5.0.0",
+    "ajv": "^8.18.0",
+    "just-diff": "^6.0.2",
     "typescript": "^5.8.0"
   }
 }

@@ -2,11 +2,23 @@ import { getSystemPrompt, getModelReasoning, getUserAgent } from "../config.js";
 import { sanitizeText } from "./sanitize.js";
 import type { IncomingHttpHeaders } from "http";
 
+const FACTORY_IDENTITY_SYSTEM = "You are Droid, an AI software engineering agent built by Factory.";
+
 interface OpenAIChatRequest {
   model: string;
   messages?: Array<{
     role: string;
-    content: string | Array<{ type: string; text?: string; image_url?: unknown }>;
+    content: string | Array<{ type: string; text?: string; image_url?: unknown }> | null;
+    tool_calls?: Array<{
+      id?: string;
+      type?: string;
+      function?: {
+        name?: string;
+        arguments?: string;
+      };
+    }>;
+    tool_call_id?: string;
+    name?: string;
   }>;
   stream?: boolean;
   max_tokens?: number;
@@ -59,7 +71,47 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
         continue;
       }
 
+      if (msg.role === "tool") {
+        messages.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: msg.tool_call_id || msg.name || `tool_${Date.now()}`,
+              content: stringifyMessageContent(msg.content),
+            },
+          ],
+        });
+        continue;
+      }
+
       const content: Array<Record<string, unknown>> = [];
+
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        if (typeof msg.content === "string" && msg.content) {
+          content.push({ type: "text", text: msg.content });
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "text") {
+              content.push({ type: "text", text: part.text });
+            }
+          }
+        }
+
+        for (const toolCall of msg.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name) {
+            content.push({
+              type: "tool_use",
+              id: toolCall.id || `toolu_${Date.now()}`,
+              name: toolCall.function.name,
+              input: parseToolArguments(toolCall.function.arguments),
+            });
+          }
+        }
+
+        messages.push({ role: "assistant", content });
+        continue;
+      }
 
       if (typeof msg.content === "string") {
         content.push({ type: "text", text: msg.content });
@@ -79,9 +131,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
     }
   }
 
-  // Merge system content (from config + client system messages) into the first user message.
-  // Factory.ai rejects the Anthropic `system` parameter with fk- API keys (returns 403),
-  // so we prepend it as text in the first user message instead.
+  // Build system array from config system prompt + client system messages.
   const systemPrompt = getSystemPrompt();
   const allSystemParts: Array<Record<string, unknown>> = [];
   if (systemPrompt) {
@@ -90,25 +140,18 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   allSystemParts.push(...systemContent);
 
   if (allSystemParts.length > 0) {
-    const systemText = sanitizeText(allSystemParts
-      .map((p) => (p as { text?: string }).text || "")
-      .filter(Boolean)
-      .join("\n\n"));
-
-    if (messages.length > 0 && (messages[0] as { role: string }).role === "user") {
-      // Merge system text into the first user message as a single text block.
-      // Factory.ai rejects requests with multiple text parts in a content array,
-      // so we must concatenate everything into one string.
-      const firstMsg = messages[0] as { role: string; content: Array<Record<string, unknown>> };
-      const existingText = firstMsg.content
-        .map((p) => (p as { text?: string }).text || "")
-        .filter(Boolean)
-        .join("\n\n");
-      firstMsg.content = [{ type: "text", text: systemText + "\n\n" + existingText }];
-    } else {
-      // Insert a new user message at the front with the system text
-      messages.unshift({ role: "user", content: [{ type: "text", text: systemText }] });
+    const hasIdentity = allSystemParts.some(
+      (part) => part.type === "text" && part.text === FACTORY_IDENTITY_SYSTEM,
+    );
+    if (!hasIdentity) {
+      allSystemParts.unshift({ type: "text", text: FACTORY_IDENTITY_SYSTEM });
     }
+    anthropicRequest.system = allSystemParts.map((part) => {
+      if (part.type === "text" && typeof part.text === "string") {
+        return { ...part, text: sanitizeText(part.text) };
+      }
+      return part;
+    });
   }
 
   anthropicRequest.messages = messages;
@@ -156,6 +199,37 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   }
 
   return anthropicRequest;
+}
+
+function parseToolArguments(argumentsText: string | undefined): Record<string, unknown> {
+  if (!argumentsText) return {};
+  try {
+    const parsed = JSON.parse(argumentsText) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
+  return { input: argumentsText };
+}
+
+function stringifyMessageContent(
+  content: string | Array<{ type: string; text?: string; image_url?: unknown }> | null,
+): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (part.type === "text") return part.text || "";
+        return JSON.stringify(part);
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return "";
 }
 
 export function getAnthropicHeaders(

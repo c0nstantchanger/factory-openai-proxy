@@ -1,6 +1,5 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { sanitizeText } from "./transformers/sanitize.js";
 import {
   getConfig,
   getModelById,
@@ -12,6 +11,7 @@ import {
 } from "./config.js";
 import { getApiKey } from "./auth.js";
 import { transformToAnthropic, getAnthropicHeaders } from "./transformers/request-anthropic.js";
+import { buildAnthropicMessagesRequest } from "./transformers/request-anthropic-messages.js";
 import { transformToOpenAI, getOpenAIHeaders } from "./transformers/request-openai.js";
 import { transformToCommon, getCommonHeaders } from "./transformers/request-common.js";
 import { AnthropicResponseTransformer, convertAnthropicToChatCompletion } from "./transformers/response-anthropic.js";
@@ -380,97 +380,7 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
     const isStreaming = anthropicRequest.stream === true;
     const headers = getAnthropicHeaders(authHeader, req.headers, isStreaming, modelId, provider);
 
-    // Inject system prompt into first user message (not the `system` parameter,
-    // which Factory.ai rejects with fk- API keys).
-    // IMPORTANT: Factory.ai also rejects multiple text parts in a content array,
-    // so everything must be merged into a single text block.
-    const systemPrompt = getSystemPrompt();
-    const modifiedRequest = { ...anthropicRequest, model: modelId };
-    if (systemPrompt) {
-      // Merge any existing system content with the config system prompt
-      const existingSystem = modifiedRequest.system;
-      const allParts: string[] = [systemPrompt];
-      if (existingSystem) {
-        if (typeof existingSystem === "string") {
-          allParts.push(existingSystem);
-        } else if (Array.isArray(existingSystem)) {
-          for (const part of existingSystem) {
-            if (typeof part === "string") allParts.push(part);
-            else if (part?.text) allParts.push(part.text);
-          }
-        }
-      }
-      delete modifiedRequest.system;
-
-      const systemText = sanitizeText(allParts.join("\n\n"));
-      if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
-        const firstContent = modifiedRequest.messages[0].content;
-        const userText = typeof firstContent === "string"
-          ? firstContent
-          : Array.isArray(firstContent)
-            ? firstContent.map((p: { text?: string }) => p.text || "").filter(Boolean).join("\n\n")
-            : "";
-        modifiedRequest.messages[0].content = [{ type: "text", text: systemText + "\n\n" + userText }];
-      } else {
-        modifiedRequest.messages = [
-          { role: "user", content: [{ type: "text", text: systemText }] },
-          ...(modifiedRequest.messages || []),
-        ];
-      }
-    } else {
-      // Even without a config system prompt, strip any client-provided `system`
-      // to avoid 403 from Factory.ai. Inline it instead.
-      if (modifiedRequest.system) {
-        const existingSystem = modifiedRequest.system;
-        const parts: string[] = [];
-        if (typeof existingSystem === "string") {
-          parts.push(existingSystem);
-        } else if (Array.isArray(existingSystem)) {
-          for (const part of existingSystem) {
-            if (typeof part === "string") parts.push(part);
-            else if (part?.text) parts.push(part.text);
-          }
-        }
-        delete modifiedRequest.system;
-
-        if (parts.length > 0) {
-          const systemText = sanitizeText(parts.join("\n\n"));
-          if (modifiedRequest.messages?.length > 0 && modifiedRequest.messages[0].role === "user") {
-            const firstContent = modifiedRequest.messages[0].content;
-            const userText = typeof firstContent === "string"
-              ? firstContent
-              : Array.isArray(firstContent)
-                ? firstContent.map((p: { text?: string }) => p.text || "").filter(Boolean).join("\n\n")
-                : "";
-            modifiedRequest.messages[0].content = [{ type: "text", text: systemText + "\n\n" + userText }];
-          } else {
-            modifiedRequest.messages = [
-              { role: "user", content: [{ type: "text", text: systemText }] },
-              ...(modifiedRequest.messages || []),
-            ];
-          }
-        }
-      }
-    }
-
-    // Handle thinking field
-    const reasoningLevel = getModelReasoning(modelId);
-    if (reasoningLevel === "auto") {
-      // preserve original
-    } else if (reasoningLevel && ["low", "medium", "high", "xhigh"].includes(reasoningLevel)) {
-      const budgetTokens: Record<string, number> = {
-        low: 4096,
-        medium: 12288,
-        high: 24576,
-        xhigh: 40960,
-      };
-      modifiedRequest.thinking = {
-        type: "enabled",
-        budget_tokens: budgetTokens[reasoningLevel],
-      };
-    } else {
-      delete modifiedRequest.thinking;
-    }
+    const modifiedRequest = buildAnthropicMessagesRequest(anthropicRequest, modelId);
 
     const outBodyMessages = JSON.stringify(modifiedRequest);
     const response = await fetch(endpointUrl, {
