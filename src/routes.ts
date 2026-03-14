@@ -68,7 +68,7 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
     // Get auth
     let authHeader: string;
     try {
-      authHeader = await getApiKey(req.headers.authorization || null);
+      authHeader = await getApiKey();
     } catch (error) {
       console.error("[ROUTES] Failed to get API key:", error);
       res.status(500).json({ error: "API key not available" });
@@ -254,10 +254,7 @@ router.post("/v1/responses", async (req: Request, res: Response) => {
     // Get auth
     let authHeader: string;
     try {
-      const clientAuth = req.headers["x-api-key"]
-        ? `Bearer ${req.headers["x-api-key"]}`
-        : req.headers.authorization || null;
-      authHeader = await getApiKey(clientAuth);
+      authHeader = await getApiKey();
     } catch (error) {
       console.error("[ROUTES] Failed to get API key:", error);
       res.status(500).json({ error: "API key not available" });
@@ -366,10 +363,7 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
     // Get auth
     let authHeader: string;
     try {
-      const clientAuth = req.headers["x-api-key"]
-        ? `Bearer ${req.headers["x-api-key"]}`
-        : req.headers.authorization || null;
-      authHeader = await getApiKey(clientAuth);
+      authHeader = await getApiKey();
     } catch (error) {
       console.error("[ROUTES] Failed to get API key:", error);
       res.status(500).json({ error: "API key not available" });
@@ -459,10 +453,7 @@ router.post("/v1/messages/count_tokens", async (req: Request, res: Response) => 
 
     let authHeader: string;
     try {
-      const clientAuth = req.headers["x-api-key"]
-        ? `Bearer ${req.headers["x-api-key"]}`
-        : req.headers.authorization || null;
-      authHeader = await getApiKey(clientAuth);
+      authHeader = await getApiKey();
     } catch (error) {
       console.error("[ROUTES] Failed to get API key:", error);
       res.status(500).json({ error: "API key not available" });

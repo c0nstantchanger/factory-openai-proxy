@@ -11,3 +11,9 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ${HOME}/.factory:/root/.factory
+    networks:
+      - web_caddy
+
+networks:
+  web_caddy:
+    external: true

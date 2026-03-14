@@ -8,7 +8,7 @@ interface OpenAIChatRequest {
   model: string;
   messages?: Array<{
     role: string;
-    content: string | Array<{ type: string; text?: string; image_url?: unknown }> | null;
+    content: string | Array<{ type: string; text?: string; image_url?: { url: string; detail?: string }; [k: string]: unknown }> | null;
     tool_calls?: Array<{
       id?: string;
       type?: string;
@@ -52,7 +52,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
 
   // Extract system messages and transform other messages
   const systemContent: Array<Record<string, unknown>> = [];
-  const messages: Array<Record<string, unknown>> = [];
+  const rawMessages: Array<Record<string, unknown>> = [];
 
   if (openaiRequest.messages && Array.isArray(openaiRequest.messages)) {
     for (const msg of openaiRequest.messages) {
@@ -72,27 +72,30 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
       }
 
       if (msg.role === "tool") {
-        messages.push({
+        // Build tool_result content — preserve structure when possible
+        const toolResultContent = buildToolResultContent(msg.content);
+        rawMessages.push({
           role: "user",
           content: [
             {
               type: "tool_result",
               tool_use_id: msg.tool_call_id || msg.name || `tool_${Date.now()}`,
-              content: stringifyMessageContent(msg.content),
+              content: toolResultContent,
             },
           ],
         });
         continue;
       }
 
-      const content: Array<Record<string, unknown>> = [];
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        const content: Array<Record<string, unknown>> = [];
 
-      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        // Only add text content if it's non-empty
         if (typeof msg.content === "string" && msg.content) {
           content.push({ type: "text", text: msg.content });
         } else if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
-            if (part.type === "text") {
+            if (part.type === "text" && part.text) {
               content.push({ type: "text", text: part.text });
             }
           }
@@ -109,9 +112,12 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
           }
         }
 
-        messages.push({ role: "assistant", content });
+        rawMessages.push({ role: "assistant", content });
         continue;
       }
+
+      // Regular user or assistant message
+      const content: Array<Record<string, unknown>> = [];
 
       if (typeof msg.content === "string") {
         content.push({ type: "text", text: msg.content });
@@ -119,17 +125,25 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
         for (const part of msg.content) {
           if (part.type === "text") {
             content.push({ type: "text", text: part.text });
-          } else if (part.type === "image_url") {
-            content.push({ type: "image", source: part.image_url });
+          } else if (part.type === "image_url" && part.image_url) {
+            content.push(transformImageUrl(part.image_url));
           } else {
             content.push(part as Record<string, unknown>);
           }
         }
+      } else if (msg.content === null || msg.content === undefined) {
+        // Assistant messages with null content (e.g., pure function-call messages
+        // that were already handled above, or empty assistant turns).
+        // Push an empty text block so the message isn't contentless.
+        content.push({ type: "text", text: "" });
       }
 
-      messages.push({ role: msg.role, content });
+      rawMessages.push({ role: msg.role, content });
     }
   }
+
+  // Merge consecutive messages with the same role (Anthropic requires alternating roles)
+  const messages = mergeConsecutiveSameRole(rawMessages);
 
   // Build system array from config system prompt + client system messages.
   const systemPrompt = getSystemPrompt();
@@ -201,6 +215,108 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   return anthropicRequest;
 }
 
+/**
+ * Transform an OpenAI image_url content part to Anthropic image source format.
+ * OpenAI: { url: "data:image/png;base64,..." } or { url: "https://..." }
+ * Anthropic: { type: "base64", media_type: "image/png", data: "..." } or { type: "url", url: "..." }
+ */
+function transformImageUrl(imageUrl: { url: string; detail?: string }): Record<string, unknown> {
+  const url = imageUrl.url;
+
+  // Check for base64 data URI
+  const dataUriMatch = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+  if (dataUriMatch) {
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: dataUriMatch[1],
+        data: dataUriMatch[2],
+      },
+    };
+  }
+
+  // Regular URL
+  return {
+    type: "image",
+    source: {
+      type: "url",
+      url,
+    },
+  };
+}
+
+/**
+ * Build tool_result content from an OpenAI tool message's content.
+ * Returns a string for simple text, or an array of content blocks for multipart.
+ */
+function buildToolResultContent(
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string; detail?: string }; [k: string]: unknown }> | null,
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    // If it's a single text block, just return the string
+    if (content.length === 1 && content[0].type === "text") {
+      return content[0].text || "";
+    }
+    // Multi-part: convert each block
+    return content.map((part) => {
+      if (part.type === "text") {
+        return { type: "text", text: part.text || "" };
+      }
+      if (part.type === "image_url" && part.image_url) {
+        return transformImageUrl(part.image_url);
+      }
+      return part as Record<string, unknown>;
+    });
+  }
+  return "";
+}
+
+/**
+ * Merge consecutive messages with the same role.
+ * Anthropic requires strictly alternating user/assistant roles.
+ * Consecutive user messages (e.g., multiple tool_result messages) get their
+ * content arrays concatenated into a single message.
+ */
+function mergeConsecutiveSameRole(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  if (messages.length === 0) return [];
+
+  const merged: Array<Record<string, unknown>> = [];
+
+  for (const msg of messages) {
+    const lastMsg = merged.length > 0 ? merged[merged.length - 1] : null;
+
+    if (lastMsg && lastMsg.role === msg.role) {
+      // Merge content arrays
+      const lastContent = lastMsg.content;
+      const curContent = msg.content;
+
+      if (Array.isArray(lastContent) && Array.isArray(curContent)) {
+        (lastContent as Array<Record<string, unknown>>).push(...(curContent as Array<Record<string, unknown>>));
+      } else if (Array.isArray(lastContent) && typeof curContent === "string") {
+        (lastContent as Array<Record<string, unknown>>).push({ type: "text", text: curContent });
+      } else if (typeof lastContent === "string" && Array.isArray(curContent)) {
+        lastMsg.content = [
+          { type: "text", text: lastContent },
+          ...(curContent as Array<Record<string, unknown>>),
+        ];
+      } else if (typeof lastContent === "string" && typeof curContent === "string") {
+        lastMsg.content = [
+          { type: "text", text: lastContent },
+          { type: "text", text: curContent },
+        ];
+      }
+    } else {
+      merged.push({ ...msg });
+    }
+  }
+
+  return merged;
+}
+
 function parseToolArguments(argumentsText: string | undefined): Record<string, unknown> {
   if (!argumentsText) return {};
   try {
@@ -212,24 +328,6 @@ function parseToolArguments(argumentsText: string | undefined): Record<string, u
     // fall through
   }
   return { input: argumentsText };
-}
-
-function stringifyMessageContent(
-  content: string | Array<{ type: string; text?: string; image_url?: unknown }> | null,
-): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (part.type === "text") return part.text || "";
-        return JSON.stringify(part);
-      })
-      .filter(Boolean)
-      .join("\n\n");
-  }
-  return "";
 }
 
 export function getAnthropicHeaders(

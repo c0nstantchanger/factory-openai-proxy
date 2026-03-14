@@ -7,7 +7,7 @@ import { createDecipheriv, createCipheriv, randomBytes } from "crypto";
 let currentApiKey: string | null = null;
 let currentRefreshToken: string | null = null;
 let lastRefreshTime: number | null = null;
-let authSource: "factory_key" | "env" | "file_v2" | "file" | "client" | null = null;
+let authSource: "factory_key" | "env" | "file_v2" | "file" | null = null;
 let factoryApiKey: string | null = null;
 
 const WORKOS_CLIENT_ID = "client_01HNM792M5G5G1A2THWPXKFMXB";
@@ -102,9 +102,9 @@ function loadAuthConfig(): AuthConfig {
     console.error("[AUTH] Error reading ~/.factory/auth.json:", error);
   }
 
-  // 5. No configured auth — use client authorization
-  console.log("[AUTH] No auth configuration found, will use client authorization headers");
-  authSource = "client";
+  // 5. No configured auth — fail
+  console.error("[AUTH] No auth configuration found. The proxy will reject all requests until auth is configured.");
+  authSource = null;
   return { type: "client", value: null };
 }
 
@@ -234,7 +234,7 @@ export async function initializeAuth(): Promise<void> {
       }
       console.log("[AUTH] Initialized with refresh token mechanism");
     } else {
-      console.log("[AUTH] Initialized for client authorization mode");
+      console.error("[AUTH] WARNING: No server-side auth configured. All requests will return 500.");
     }
   } catch (error) {
     console.error("[AUTH] Failed to initialize auth system:", error);
@@ -242,7 +242,7 @@ export async function initializeAuth(): Promise<void> {
   }
 }
 
-export async function getApiKey(clientAuthorization: string | null = null): Promise<string> {
+export async function getApiKey(): Promise<string> {
   // Priority 1: FACTORY_API_KEY
   if (authSource === "factory_key" && factoryApiKey) {
     return `Bearer ${factoryApiKey}`;
@@ -260,12 +260,8 @@ export async function getApiKey(clientAuthorization: string | null = null): Prom
     return `Bearer ${currentApiKey}`;
   }
 
-  // Priority 3: Client authorization header
-  if (clientAuthorization) {
-    return clientAuthorization;
-  }
-
+  // No server-side auth configured — fail immediately
   throw new Error(
-    "No authorization available. Configure FACTORY_API_KEY, DROID_REFRESH_KEY, or provide client Authorization header."
+    "No server-side authorization configured. Set FACTORY_API_KEY, DROID_REFRESH_KEY, or provide ~/.factory/auth.v2.file."
   );
 }
