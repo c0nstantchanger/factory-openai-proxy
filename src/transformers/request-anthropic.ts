@@ -1,5 +1,6 @@
 import { getSystemPrompt, getModelReasoning, getUserAgent } from "../config.js";
 import { sanitizeText } from "./sanitize.js";
+import { validateAnthropicMessages, validateAnthropicTools } from "./validate-anthropic.js";
 import type { IncomingHttpHeaders } from "http";
 
 const FACTORY_IDENTITY_SYSTEM = "You are Droid, an AI software engineering agent built by Factory.";
@@ -55,6 +56,12 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   const rawMessages: Array<Record<string, unknown>> = [];
 
   if (openaiRequest.messages && Array.isArray(openaiRequest.messages)) {
+    // Track tool_use IDs from the most recent assistant message so that
+    // subsequent tool_result messages without a tool_call_id can be matched
+    // by position.  Reset whenever we encounter a new assistant+tool_calls turn.
+    let lastToolUseIds: string[] = [];
+    let toolResultIndex = 0;
+
     for (const msg of openaiRequest.messages) {
       if (msg.role === "system" || msg.role === "developer") {
         if (typeof msg.content === "string") {
@@ -78,12 +85,25 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
       if (msg.role === "tool") {
         // Build tool_result content — preserve structure when possible
         const toolResultContent = buildToolResultContent(msg.content);
+        // Resolve the tool_use_id: prefer the explicit tool_call_id from the
+        // OpenAI message, then try positional match from the preceding
+        // assistant tool_calls, finally fall back to a generated id with the
+        // correct `toolu_` prefix so it at least has a valid format.
+        let resolvedToolUseId = msg.tool_call_id || msg.name;
+        if (!resolvedToolUseId) {
+          if (toolResultIndex < lastToolUseIds.length) {
+            resolvedToolUseId = lastToolUseIds[toolResultIndex];
+          } else {
+            resolvedToolUseId = `toolu_fallback_${Date.now()}_${toolResultIndex}`;
+          }
+        }
+        toolResultIndex++;
         rawMessages.push({
           role: "user",
           content: [
             {
               type: "tool_result",
-              tool_use_id: msg.tool_call_id || msg.name || `tool_${Date.now()}`,
+              tool_use_id: resolvedToolUseId,
               content: toolResultContent,
             },
           ],
@@ -105,11 +125,17 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
           }
         }
 
+        // Reset tracking for this new batch of tool calls
+        lastToolUseIds = [];
+        toolResultIndex = 0;
+
         for (const toolCall of msg.tool_calls) {
           if (toolCall.type === "function" && toolCall.function?.name) {
+            const toolUseId = toolCall.id || `toolu_gen_${Date.now()}_${lastToolUseIds.length}`;
+            lastToolUseIds.push(toolUseId);
             content.push({
               type: "tool_use",
-              id: toolCall.id || `toolu_${Date.now()}`,
+              id: toolUseId,
               name: toolCall.function.name,
               input: parseToolArguments(toolCall.function.arguments),
             });
@@ -152,7 +178,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   }
 
   // Merge consecutive messages with the same role (Anthropic requires alternating roles)
-  const messages = stripEmptyTextBlocks(mergeConsecutiveSameRole(rawMessages));
+  const messages = validateAnthropicMessages(stripEmptyTextBlocks(mergeConsecutiveSameRole(rawMessages)));
 
   // Build system array from config system prompt + client system messages.
   const systemPrompt = getSystemPrompt();
@@ -181,7 +207,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
 
   // Transform tools (OpenAI function format -> Anthropic format)
   if (openaiRequest.tools && Array.isArray(openaiRequest.tools)) {
-    anthropicRequest.tools = openaiRequest.tools.map((tool) => {
+    const transformed = openaiRequest.tools.map((tool) => {
       if (tool.type === "function" && tool.function) {
         return {
           name: tool.function.name,
@@ -191,6 +217,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
       }
       return tool;
     });
+    anthropicRequest.tools = validateAnthropicTools(transformed as Array<Record<string, unknown>>);
   }
 
   // Handle thinking field based on model config

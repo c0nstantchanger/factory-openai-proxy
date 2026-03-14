@@ -10,6 +10,7 @@
 
 import { getSystemPrompt, getModelReasoning } from "../config.js";
 import { sanitizeText } from "./sanitize.js";
+import { validateAnthropicMessages, validateAnthropicTools } from "./validate-anthropic.js";
 
 const FACTORY_IDENTITY_SYSTEM = "You are Droid, an AI software engineering agent built by Factory.";
 
@@ -110,6 +111,11 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
     //   { type: "function_call_output", call_id, output }        -> user tool_result
     //   { role: "user"|"assistant", content: [...] }  -> message shorthand
 
+    // Track tool_use IDs from function_call items so function_call_output
+    // items without a call_id can be matched by position.
+    let lastToolUseIds: string[] = [];
+    let toolResultIndex = 0;
+
     for (const item of req.input) {
       const itemType = item.type;
 
@@ -123,6 +129,11 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
           }
           continue;
         }
+        // A new message item resets tool tracking
+        if (role === "user") {
+          // User message after tool results — reset for next cycle
+          toolResultIndex = 0;
+        }
         const anthropicContent = convertResponsesContentToAnthropic(item.content);
         if (anthropicContent.length > 0) {
           rawMessages.push({ role, content: anthropicContent });
@@ -131,6 +142,8 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
       }
 
       if (itemType === "input_text") {
+        // New user text resets tool tracking
+        toolResultIndex = 0;
         const text = item.text || "";
         if (text.length > 0) {
           rawMessages.push({
@@ -168,12 +181,14 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
             parsedInput = { input: item.arguments };
           }
         }
+        const toolUseId = item.call_id || item.id || `toolu_gen_${Date.now()}_${lastToolUseIds.length}`;
+        lastToolUseIds.push(toolUseId);
         rawMessages.push({
           role: "assistant",
           content: [
             {
               type: "tool_use",
-              id: item.call_id || item.id || `toolu_${Date.now()}`,
+              id: toolUseId,
               name: item.name || "unknown",
               input: parsedInput,
             },
@@ -184,12 +199,22 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
 
       if (itemType === "function_call_output") {
         // User's tool_result block
+        // Resolve call_id: prefer explicit, then positional match, then fallback
+        let resolvedCallId = item.call_id as string | undefined;
+        if (!resolvedCallId) {
+          if (toolResultIndex < lastToolUseIds.length) {
+            resolvedCallId = lastToolUseIds[toolResultIndex];
+          } else {
+            resolvedCallId = `toolu_fallback_${Date.now()}_${toolResultIndex}`;
+          }
+        }
+        toolResultIndex++;
         rawMessages.push({
           role: "user",
           content: [
             {
               type: "tool_result",
-              tool_use_id: item.call_id || `tool_${Date.now()}`,
+              tool_use_id: resolvedCallId,
               content: item.output || "",
             },
           ],
@@ -245,17 +270,18 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
     }
   }
 
-  anthropicRequest.messages = stripEmptyTextBlocks(mergedMessages);
+  anthropicRequest.messages = validateAnthropicMessages(stripEmptyTextBlocks(mergedMessages));
 
   // --- Transform tools ---
   if (req.tools && Array.isArray(req.tools)) {
-    anthropicRequest.tools = req.tools
+    const transformed = req.tools
       .filter((t) => t.type === "function")
       .map((t) => ({
         name: t.name || "unknown",
         description: t.description || "",
         input_schema: t.parameters || {},
       }));
+    anthropicRequest.tools = validateAnthropicTools(transformed as Array<Record<string, unknown>>);
   }
 
   // --- Handle thinking/reasoning ---

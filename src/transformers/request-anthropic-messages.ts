@@ -1,5 +1,6 @@
 import { getModelReasoning, getSystemPrompt } from "../config.js";
 import { sanitizeText } from "./sanitize.js";
+import { validateAnthropicMessages, validateAnthropicTools } from "./validate-anthropic.js";
 
 const FACTORY_IDENTITY_SYSTEM = "You are Droid, an AI software engineering agent built by Factory.";
 
@@ -93,7 +94,12 @@ export function buildAnthropicMessagesRequest(
     }
     // Remove developer messages and strip empty text blocks
     const filtered = msgs.filter((m) => m.role !== "developer");
-    modifiedRequest.messages = stripEmptyTextBlocks(filtered);
+    modifiedRequest.messages = validateAnthropicMessages(stripEmptyTextBlocks(filtered));
+  }
+
+  // Validate tool definitions if present
+  if (Array.isArray(modifiedRequest.tools)) {
+    modifiedRequest.tools = validateAnthropicTools(modifiedRequest.tools as Array<Record<string, unknown>>);
   }
 
   const reasoningLevel = getModelReasoning(modelId);
