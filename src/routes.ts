@@ -119,6 +119,9 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[ROUTES] Endpoint error ${response.status}: ${errorText}`);
+      if (response.status === 400) {
+        console.error(`[ROUTES] Outgoing request body that caused 400:\n${outBody}`);
+      }
       res.status(response.status).json({
         error: `Endpoint returned ${response.status}`,
         details: errorText,
@@ -547,6 +550,10 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`[ROUTES] /v1/messages error ${response.status}: ${errorText}`);
+      if (response.status === 400) {
+        console.error(`[ROUTES] Outgoing request body:\n${outBodyMessages}`);
+      }
       res.status(response.status).json({
         error: `Endpoint returned ${response.status}`,
         details: errorText,
@@ -554,8 +561,8 @@ router.post("/v1/messages", async (req: Request, res: Response) => {
       return;
     }
 
-    if (isStreaming) {
-      res.setHeader("Content-Type", "text/event-stream");
+      if (isStreaming) {
+        res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 

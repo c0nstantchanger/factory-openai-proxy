@@ -152,7 +152,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
   }
 
   // Merge consecutive messages with the same role (Anthropic requires alternating roles)
-  const messages = mergeConsecutiveSameRole(rawMessages);
+  const messages = stripEmptyTextBlocks(mergeConsecutiveSameRole(rawMessages));
 
   // Build system array from config system prompt + client system messages.
   const systemPrompt = getSystemPrompt();
@@ -330,6 +330,34 @@ function mergeConsecutiveSameRole(messages: Array<Record<string, unknown>>): Arr
   }
 
   return merged;
+}
+
+/**
+ * Final safety net: remove any empty text content blocks from all messages.
+ * Anthropic rejects `{ type: "text", text: "" }`.
+ * Also drops messages that end up with zero content blocks after filtering.
+ */
+function stripEmptyTextBlocks(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const cleaned: Array<Record<string, unknown>> = [];
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      const filtered = (msg.content as Array<Record<string, unknown>>).filter(
+        (block) => !(block.type === "text" && (!block.text || (block.text as string).length === 0)),
+      );
+      if (filtered.length > 0) {
+        cleaned.push({ ...msg, content: filtered });
+      }
+    } else if (typeof msg.content === "string") {
+      if (msg.content.length > 0) {
+        cleaned.push(msg);
+      }
+    } else {
+      cleaned.push(msg);
+    }
+  }
+  return cleaned;
 }
 
 function parseToolArguments(argumentsText: string | undefined): Record<string, unknown> {

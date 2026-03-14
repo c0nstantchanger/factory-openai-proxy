@@ -124,15 +124,20 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
           continue;
         }
         const anthropicContent = convertResponsesContentToAnthropic(item.content);
-        rawMessages.push({ role, content: anthropicContent });
+        if (anthropicContent.length > 0) {
+          rawMessages.push({ role, content: anthropicContent });
+        }
         continue;
       }
 
       if (itemType === "input_text") {
-        rawMessages.push({
-          role: "user",
-          content: [{ type: "text", text: item.text || "" }],
-        });
+        const text = item.text || "";
+        if (text.length > 0) {
+          rawMessages.push({
+            role: "user",
+            content: [{ type: "text", text }],
+          });
+        }
         continue;
       }
 
@@ -143,10 +148,13 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
       }
 
       if (itemType === "output_text") {
-        rawMessages.push({
-          role: "assistant",
-          content: [{ type: "text", text: item.text || "" }],
-        });
+        const text = item.text || "";
+        if (text.length > 0) {
+          rawMessages.push({
+            role: "assistant",
+            content: [{ type: "text", text }],
+          });
+        }
         continue;
       }
 
@@ -199,7 +207,9 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
           continue;
         }
         const anthropicContent = convertResponsesContentToAnthropic(item.content);
-        rawMessages.push({ role: item.role, content: anthropicContent });
+        if (anthropicContent.length > 0) {
+          rawMessages.push({ role: item.role, content: anthropicContent });
+        }
         continue;
       }
 
@@ -235,7 +245,7 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
     }
   }
 
-  anthropicRequest.messages = mergedMessages;
+  anthropicRequest.messages = stripEmptyTextBlocks(mergedMessages);
 
   // --- Transform tools ---
   if (req.tools && Array.isArray(req.tools)) {
@@ -296,23 +306,27 @@ function convertResponsesContentToAnthropic(
   content: string | Array<Record<string, unknown>> | undefined,
 ): Array<Record<string, unknown>> {
   if (typeof content === "string") {
+    if (content.length === 0) return [];
     return [{ type: "text", text: content }];
   }
   if (!Array.isArray(content)) {
-    return [{ type: "text", text: "" }];
+    return [];
   }
 
   const result: Array<Record<string, unknown>> = [];
   for (const part of content) {
     if (part.type === "input_text" || part.type === "output_text" || part.type === "text") {
-      result.push({ type: "text", text: (part.text as string) || "" });
+      const text = (part.text as string) || "";
+      if (text.length > 0) {
+        result.push({ type: "text", text });
+      }
     } else if (part.type === "input_image") {
       result.push(convertImageItem(part));
     } else {
       result.push(part);
     }
   }
-  return result.length > 0 ? result : [{ type: "text", text: "" }];
+  return result;
 }
 
 function convertImageItem(item: Record<string, unknown>): Record<string, unknown> {
@@ -363,4 +377,33 @@ function mergeConsecutiveSameRole(
     }
   }
   return merged;
+}
+
+/**
+ * Final safety net: remove any empty text content blocks from all messages.
+ * Anthropic rejects `{ type: "text", text: "" }`.
+ * Also drops messages that end up with zero content blocks after filtering.
+ */
+function stripEmptyTextBlocks(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const cleaned: Array<Record<string, unknown>> = [];
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      const filtered = (msg.content as Array<Record<string, unknown>>).filter(
+        (block) => !(block.type === "text" && (!block.text || (block.text as string).length === 0)),
+      );
+      if (filtered.length > 0) {
+        cleaned.push({ ...msg, content: filtered });
+      }
+      // else: drop the entire message — no content left
+    } else if (typeof msg.content === "string") {
+      if (msg.content.length > 0) {
+        cleaned.push(msg);
+      }
+    } else {
+      cleaned.push(msg);
+    }
+  }
+  return cleaned;
 }

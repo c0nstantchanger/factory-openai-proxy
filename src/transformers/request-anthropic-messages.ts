@@ -69,6 +69,11 @@ export function buildAnthropicMessagesRequest(
     modifiedRequest.system = sanitizeSystemParts(ensureFactoryIdentitySystem(systemParts));
   }
 
+  // Strip empty text blocks from messages — Anthropic rejects { type: "text", text: "" }
+  if (Array.isArray(modifiedRequest.messages)) {
+    modifiedRequest.messages = stripEmptyTextBlocks(modifiedRequest.messages as Array<Record<string, unknown>>);
+  }
+
   const reasoningLevel = getModelReasoning(modelId);
   if (reasoningLevel === "auto") {
     return modifiedRequest;
@@ -84,4 +89,31 @@ export function buildAnthropicMessagesRequest(
 
   delete modifiedRequest.thinking;
   return modifiedRequest;
+}
+
+/**
+ * Strip empty text content blocks from messages.
+ * Anthropic rejects `{ type: "text", text: "" }`.
+ */
+function stripEmptyTextBlocks(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const cleaned: Array<Record<string, unknown>> = [];
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      const filtered = (msg.content as Array<Record<string, unknown>>).filter(
+        (block) => !(block.type === "text" && (!block.text || (block.text as string).length === 0)),
+      );
+      if (filtered.length > 0) {
+        cleaned.push({ ...msg, content: filtered });
+      }
+    } else if (typeof msg.content === "string") {
+      if (msg.content.length > 0) {
+        cleaned.push(msg);
+      }
+    } else {
+      cleaned.push(msg);
+    }
+  }
+  return cleaned;
 }
