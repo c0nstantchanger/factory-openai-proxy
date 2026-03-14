@@ -19,6 +19,16 @@ import {
   OpenAIResponseTransformer,
   convertResponseToChatCompletion,
 } from "./transformers/response-openai.js";
+import { transformResponsesToAnthropic } from "./transformers/request-responses-to-anthropic.js";
+import {
+  AnthropicToResponsesTransformer,
+  convertAnthropicToResponses,
+} from "./transformers/response-anthropic-to-responses.js";
+import { transformResponsesToCommon } from "./transformers/request-responses-to-common.js";
+import {
+  CommonToResponsesTransformer,
+  convertCommonToResponses,
+} from "./transformers/response-common-to-responses.js";
 
 const router = Router();
 
@@ -223,12 +233,12 @@ router.post("/v1/chat/completions", async (req: Request, res: Response) => {
   }
 });
 
-// ─── POST /v1/responses (direct passthrough to OpenAI responses API) ─────────
+// ─── POST /v1/responses (OpenAI Responses API — all model types) ─────────────
 
 router.post("/v1/responses", async (req: Request, res: Response) => {
   try {
-    const openaiRequest = req.body;
-    const modelId = getRedirectedModelId(openaiRequest.model);
+    const responsesRequest = req.body;
+    const modelId = getRedirectedModelId(responsesRequest.model);
 
     if (!modelId) {
       res.status(400).json({ error: "model is required" });
@@ -241,16 +251,6 @@ router.post("/v1/responses", async (req: Request, res: Response) => {
       return;
     }
 
-    if (model.type !== "openai") {
-      res.status(400).json({
-        error: "Invalid endpoint type",
-        message: `/v1/responses only supports openai-type models, ${modelId} is ${model.type}`,
-      });
-      return;
-    }
-
-    const endpointUrl = getEndpointUrl("openai");
-
     // Get auth
     let authHeader: string;
     try {
@@ -262,67 +262,229 @@ router.post("/v1/responses", async (req: Request, res: Response) => {
     }
 
     const provider = getModelProvider(modelId);
-    const headers = getOpenAIHeaders(authHeader, req.headers, provider);
+    const isStreaming = responsesRequest.stream === true;
+    const requestWithModel = { ...responsesRequest, model: modelId };
 
-    // Inject system prompt into instructions
-    const systemPrompt = getSystemPrompt();
-    const modifiedRequest = { ...openaiRequest, model: modelId };
-    if (systemPrompt) {
-      if (modifiedRequest.instructions) {
-        modifiedRequest.instructions = systemPrompt + modifiedRequest.instructions;
-      } else {
-        modifiedRequest.instructions = systemPrompt;
+    // ─── OpenAI-type models: native passthrough ──────────────────────────
+    if (model.type === "openai") {
+      const endpointUrl = getEndpointUrl("openai");
+      const headers = getOpenAIHeaders(authHeader, req.headers, provider);
+
+      // Inject system prompt into instructions
+      const systemPrompt = getSystemPrompt();
+      if (systemPrompt) {
+        if (requestWithModel.instructions) {
+          requestWithModel.instructions = systemPrompt + requestWithModel.instructions;
+        } else {
+          requestWithModel.instructions = systemPrompt;
+        }
       }
-    }
 
-    // Handle reasoning field
-    const reasoningLevel = getModelReasoning(modelId);
-    if (reasoningLevel === "auto") {
-      // preserve original
-    } else if (reasoningLevel && ["low", "medium", "high", "xhigh"].includes(reasoningLevel)) {
-      modifiedRequest.reasoning = { effort: reasoningLevel, summary: "auto" };
-    } else {
-      delete modifiedRequest.reasoning;
-    }
+      // Handle reasoning field
+      const reasoningLevel = getModelReasoning(modelId);
+      if (reasoningLevel === "auto") {
+        // preserve original
+      } else if (reasoningLevel && ["low", "medium", "high", "xhigh"].includes(reasoningLevel)) {
+        requestWithModel.reasoning = { effort: reasoningLevel, summary: "auto" };
+      } else {
+        delete requestWithModel.reasoning;
+      }
 
-    const response = await fetch(endpointUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(modifiedRequest),
-    });
+      console.log(`[ROUTES] /v1/responses -> openai (native) endpoint: ${endpointUrl}`);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      res.status(response.status).json({
-        error: `Endpoint returned ${response.status}`,
-        details: errorText,
+      const response = await fetch(endpointUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestWithModel),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        res.status(response.status).json({
+          error: `Endpoint returned ${response.status}`,
+          details: errorText,
+        });
+        return;
+      }
+
+      if (isStreaming) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+
+        const reader = response.body?.getReader();
+        if (reader) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(value);
+            }
+          } catch (streamError) {
+            console.error("[ROUTES] Stream error:", streamError);
+          }
+        }
+        res.end();
+      } else {
+        const data = await response.json();
+        res.json(data);
+      }
       return;
     }
 
-    const isStreaming = openaiRequest.stream === true;
-    if (isStreaming) {
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
+    // ─── Anthropic-type models: transform Responses -> Anthropic Messages ─
+    if (model.type === "anthropic") {
+      const endpointUrl = getEndpointUrl("anthropic");
+      const transformedRequest = transformResponsesToAnthropic(requestWithModel);
+      const headers = getAnthropicHeaders(authHeader, req.headers, isStreaming, modelId, provider);
 
-      const reader = response.body?.getReader();
-      if (reader) {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
+      console.log(`[ROUTES] /v1/responses -> anthropic endpoint: ${endpointUrl}`);
+
+      const response = await fetch(endpointUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(transformedRequest),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        res.status(response.status).json({
+          error: `Endpoint returned ${response.status}`,
+          details: errorText,
+        });
+        return;
+      }
+
+      if (isStreaming) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+
+        const transformer = new AnthropicToResponsesTransformer(modelId, `resp_${Date.now()}`);
+        const reader = response.body?.getReader();
+        if (reader) {
+          let sseBuffer = "";
+          let currentEvent: string | null = null;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              sseBuffer += Buffer.from(value).toString();
+              const lines = sseBuffer.split("\n");
+              sseBuffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                if (line.startsWith("event:")) {
+                  currentEvent = line.slice(6).trim();
+                } else if (line.startsWith("data:") && currentEvent) {
+                  const dataStr = line.slice(5).trim();
+                  let eventData: Record<string, unknown> = {};
+                  try {
+                    eventData = JSON.parse(dataStr);
+                  } catch {
+                    currentEvent = null;
+                    continue;
+                  }
+                  const transformed = transformer.transformEvent(currentEvent, eventData);
+                  if (transformed) {
+                    res.write(transformed);
+                  }
+                  currentEvent = null;
+                }
+              }
+            }
+          } catch (streamError) {
+            console.error("[ROUTES] Stream error:", streamError);
           }
-        } catch (streamError) {
-          console.error("[ROUTES] Stream error:", streamError);
+        }
+        res.end();
+      } else {
+        const data = (await response.json()) as Record<string, unknown>;
+        try {
+          const converted = convertAnthropicToResponses(data);
+          res.json(converted);
+        } catch {
+          res.json(data);
         }
       }
-      res.end();
-    } else {
-      const data = await response.json();
-      res.json(data);
+      return;
     }
+
+    // ─── Common-type models: transform Responses -> Chat Completions ─────
+    if (model.type === "common") {
+      const endpointUrl = getEndpointUrl("common");
+      const transformedRequest = transformResponsesToCommon(requestWithModel);
+      const headers = getCommonHeaders(authHeader, req.headers, provider);
+
+      console.log(`[ROUTES] /v1/responses -> common endpoint: ${endpointUrl}`);
+
+      const response = await fetch(endpointUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(transformedRequest),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        res.status(response.status).json({
+          error: `Endpoint returned ${response.status}`,
+          details: errorText,
+        });
+        return;
+      }
+
+      if (isStreaming) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+
+        const transformer = new CommonToResponsesTransformer(modelId, `resp_${Date.now()}`);
+        const reader = response.body?.getReader();
+        if (reader) {
+          let lineBuffer = "";
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              lineBuffer += Buffer.from(value).toString();
+              const lines = lineBuffer.split("\n");
+              lineBuffer = lines.pop() || "";
+
+              for (const line of lines) {
+                const transformed = transformer.transformSSELine(line);
+                if (transformed) {
+                  res.write(transformed);
+                }
+              }
+            }
+            // Process any remaining buffer
+            if (lineBuffer.trim()) {
+              const transformed = transformer.transformSSELine(lineBuffer);
+              if (transformed) {
+                res.write(transformed);
+              }
+            }
+          } catch (streamError) {
+            console.error("[ROUTES] Stream error:", streamError);
+          }
+        }
+        res.end();
+      } else {
+        const data = (await response.json()) as Record<string, unknown>;
+        try {
+          const converted = convertCommonToResponses(data);
+          res.json(converted);
+        } catch {
+          res.json(data);
+        }
+      }
+      return;
+    }
+
+    res.status(500).json({ error: `Unknown endpoint type: ${model.type}` });
   } catch (error) {
     console.error("[ROUTES] Error in /v1/responses:", error);
     res.status(500).json({
