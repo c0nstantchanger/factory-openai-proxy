@@ -58,11 +58,15 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
     for (const msg of openaiRequest.messages) {
       if (msg.role === "system") {
         if (typeof msg.content === "string") {
-          systemContent.push({ type: "text", text: msg.content });
+          if (msg.content.length > 0) {
+            systemContent.push({ type: "text", text: msg.content });
+          }
         } else if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
             if (part.type === "text") {
-              systemContent.push({ type: "text", text: part.text });
+              if (part.text && part.text.length > 0) {
+                systemContent.push({ type: "text", text: part.text });
+              }
             } else {
               systemContent.push(part as Record<string, unknown>);
             }
@@ -120,25 +124,30 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
       const content: Array<Record<string, unknown>> = [];
 
       if (typeof msg.content === "string") {
-        content.push({ type: "text", text: msg.content });
+        if (msg.content.length > 0) {
+          content.push({ type: "text", text: msg.content });
+        }
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
           if (part.type === "text") {
-            content.push({ type: "text", text: part.text });
+            if (part.text && part.text.length > 0) {
+              content.push({ type: "text", text: part.text });
+            }
           } else if (part.type === "image_url" && part.image_url) {
             content.push(transformImageUrl(part.image_url));
           } else {
             content.push(part as Record<string, unknown>);
           }
         }
-      } else if (msg.content === null || msg.content === undefined) {
-        // Assistant messages with null content (e.g., pure function-call messages
-        // that were already handled above, or empty assistant turns).
-        // Push an empty text block so the message isn't contentless.
-        content.push({ type: "text", text: "" });
       }
+      // null/undefined content: skip — assistant messages with null content are
+      // pure function-call turns already handled above; we must NOT emit an
+      // empty text block because Anthropic rejects those.
 
-      rawMessages.push({ role: msg.role, content });
+      // Only push the message if it has non-empty content
+      if (content.length > 0) {
+        rawMessages.push({ role: msg.role, content });
+      }
     }
   }
 
@@ -261,16 +270,22 @@ function buildToolResultContent(
     if (content.length === 1 && content[0].type === "text") {
       return content[0].text || "";
     }
-    // Multi-part: convert each block
-    return content.map((part) => {
-      if (part.type === "text") {
-        return { type: "text", text: part.text || "" };
-      }
-      if (part.type === "image_url" && part.image_url) {
-        return transformImageUrl(part.image_url);
-      }
-      return part as Record<string, unknown>;
-    });
+    // Multi-part: convert each block, filtering out empty text
+    const blocks = content
+      .map((part) => {
+        if (part.type === "text") {
+          if (part.text && part.text.length > 0) {
+            return { type: "text", text: part.text };
+          }
+          return null;
+        }
+        if (part.type === "image_url" && part.image_url) {
+          return transformImageUrl(part.image_url);
+        }
+        return part as Record<string, unknown>;
+      })
+      .filter((b): b is Record<string, unknown> => b !== null);
+    return blocks.length > 0 ? blocks : "";
   }
   return "";
 }
