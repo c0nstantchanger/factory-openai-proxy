@@ -115,7 +115,7 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
 
       if (itemType === "message") {
         const role = item.role || "user";
-        if (role === "system") {
+        if (role === "system" || role === "developer") {
           // Collect system text to prepend into first user message
           const content = extractTextFromContent(item.content);
           if (content) {
@@ -199,7 +199,7 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
 
       // Fallback: if it has role + content, treat as a message
       if (item.role && item.content !== undefined) {
-        if (item.role === "system") {
+        if (item.role === "system" || item.role === "developer") {
           const content = extractTextFromContent(item.content);
           if (content) {
             extraSystemTexts.push(content);

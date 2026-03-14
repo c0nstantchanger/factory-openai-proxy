@@ -56,7 +56,7 @@ export function transformToAnthropic(openaiRequest: OpenAIChatRequest): Record<s
 
   if (openaiRequest.messages && Array.isArray(openaiRequest.messages)) {
     for (const msg of openaiRequest.messages) {
-      if (msg.role === "system") {
+      if (msg.role === "system" || msg.role === "developer") {
         if (typeof msg.content === "string") {
           if (msg.content.length > 0) {
             systemContent.push({ type: "text", text: msg.content });

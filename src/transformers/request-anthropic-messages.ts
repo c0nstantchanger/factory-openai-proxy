@@ -70,8 +70,30 @@ export function buildAnthropicMessagesRequest(
   }
 
   // Strip empty text blocks from messages — Anthropic rejects { type: "text", text: "" }
+  // Also extract any "developer" role messages into system (OpenAI compat)
   if (Array.isArray(modifiedRequest.messages)) {
-    modifiedRequest.messages = stripEmptyTextBlocks(modifiedRequest.messages as Array<Record<string, unknown>>);
+    const msgs = modifiedRequest.messages as Array<Record<string, unknown>>;
+    const developerMsgs = msgs.filter((m) => m.role === "developer");
+    if (developerMsgs.length > 0) {
+      for (const devMsg of developerMsgs) {
+        if (typeof devMsg.content === "string" && devMsg.content.length > 0) {
+          systemParts.push({ type: "text", text: devMsg.content });
+        } else if (Array.isArray(devMsg.content)) {
+          for (const part of devMsg.content as Array<Record<string, unknown>>) {
+            if (part.type === "text" && part.text && (part.text as string).length > 0) {
+              systemParts.push({ type: "text", text: part.text as string });
+            }
+          }
+        }
+      }
+      // Re-apply system with any new developer content
+      if (systemParts.length > 0) {
+        modifiedRequest.system = sanitizeSystemParts(ensureFactoryIdentitySystem(systemParts));
+      }
+    }
+    // Remove developer messages and strip empty text blocks
+    const filtered = msgs.filter((m) => m.role !== "developer");
+    modifiedRequest.messages = stripEmptyTextBlocks(filtered);
   }
 
   const reasoningLevel = getModelReasoning(modelId);
