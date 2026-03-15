@@ -38,6 +38,17 @@ interface ActiveBlock {
   toolArgs?: string;
 }
 
+interface ResponseOutputItem {
+  type: string;
+  id: string;
+  status: string;
+  role?: string;
+  content?: Array<Record<string, unknown>>;
+  call_id?: string;
+  name?: string;
+  arguments?: string;
+}
+
 export class AnthropicToResponsesTransformer {
   private model: string;
   private responseId: string;
@@ -47,6 +58,9 @@ export class AnthropicToResponsesTransformer {
   private messageOutputIndex: number = 0; // the output_index for the main message item
   private contentPartCount: number = 0;
   private toolOutputCount: number = 0;
+  private messageItemId: string = `msg_${Date.now().toString(36)}`;
+  private messageParts: Array<Record<string, unknown>> = [];
+  private outputItems: Map<number, ResponseOutputItem> = new Map();
   private usage: UsageAccumulator = {
     input_tokens: 0,
     output_tokens: 0,
@@ -91,14 +105,15 @@ export class AnthropicToResponsesTransformer {
       out += this.sse("response.in_progress", baseResponse);
 
       // Add the message output item
-      const messageItem = {
+      const messageItem: ResponseOutputItem = {
         type: "message",
-        id: `msg_${Date.now().toString(36)}`,
+        id: this.messageItemId,
         status: "in_progress",
         role: "assistant",
         content: [],
       };
       this.messageOutputIndex = this.outputItemCount++;
+      this.outputItems.set(this.messageOutputIndex, messageItem);
       out += this.sse("response.output_item.added", {
         type: "response.output_item.added",
         output_index: this.messageOutputIndex,
@@ -144,7 +159,7 @@ export class AnthropicToResponsesTransformer {
           toolArgs: "",
         });
 
-        const functionCallItem = {
+        const functionCallItem: ResponseOutputItem = {
           type: "function_call",
           id: itemId,
           call_id: itemId,
@@ -152,6 +167,7 @@ export class AnthropicToResponsesTransformer {
           arguments: "",
           status: "in_progress",
         };
+        this.outputItems.set(toolOutputIndex, functionCallItem);
 
         return this.sse("response.output_item.added", {
           type: "response.output_item.added",
@@ -174,6 +190,11 @@ export class AnthropicToResponsesTransformer {
       });
 
       const contentPart = { type: "output_text", text: "" };
+      this.messageParts[contentIndex] = contentPart;
+      const messageItem = this.outputItems.get(this.messageOutputIndex);
+      if (messageItem?.content) {
+        messageItem.content[contentIndex] = contentPart;
+      }
       return this.sse("response.content_part.added", {
         type: "response.content_part.added",
         item_id: itemId,
@@ -204,6 +225,11 @@ export class AnthropicToResponsesTransformer {
         if (!partialJson) return null;
         block.toolArgs = (block.toolArgs || "") + partialJson;
 
+        const functionCallItem = this.outputItems.get(block.outputIndex);
+        if (functionCallItem) {
+          functionCallItem.arguments = block.toolArgs || "";
+        }
+
         return this.sse("response.function_call_arguments.delta", {
           type: "response.function_call_arguments.delta",
           item_id: block.itemId,
@@ -217,6 +243,15 @@ export class AnthropicToResponsesTransformer {
       if (!text) return null;
       block.text += text;
       this.accumulatedText += text;
+
+      const messageItem = this.outputItems.get(this.messageOutputIndex);
+      const currentPart = this.messageParts[block.contentIndex];
+      if (currentPart) {
+        currentPart.text = block.text;
+      }
+      if (messageItem?.content) {
+        messageItem.content[block.contentIndex] = { type: "output_text", text: block.text };
+      }
 
       return this.sse("response.output_text.delta", {
         type: "response.output_text.delta",
@@ -244,10 +279,15 @@ export class AnthropicToResponsesTransformer {
           output_index: block.outputIndex,
           arguments: block.toolArgs || "",
         });
+        const functionCallItem = this.outputItems.get(block.outputIndex);
+        if (functionCallItem) {
+          functionCallItem.arguments = block.toolArgs || "";
+          functionCallItem.status = "completed";
+        }
         out += this.sse("response.output_item.done", {
           type: "response.output_item.done",
           output_index: block.outputIndex,
-          item: {
+          item: functionCallItem || {
             type: "function_call",
             id: block.itemId,
             call_id: block.toolCallId,
@@ -292,18 +332,22 @@ export class AnthropicToResponsesTransformer {
       const stopReason = delta?.stop_reason as string | undefined;
       if (stopReason) {
         this.lastStopReason = stopReason;
-        const messageItem = {
-          type: "message",
-          id: `msg_${Date.now().toString(36)}`,
-          status: "completed",
-          role: "assistant",
-          content: [{ type: "output_text", text: this.accumulatedText }],
-        };
+        const messageItem = this.outputItems.get(this.messageOutputIndex);
+        if (messageItem) {
+          messageItem.status = "completed";
+          messageItem.content = this.messageParts.filter(Boolean);
+        }
 
         return this.sse("response.output_item.done", {
           type: "response.output_item.done",
           output_index: this.messageOutputIndex,
-          item: messageItem,
+          item: messageItem || {
+            type: "message",
+            id: this.messageItemId,
+            status: "completed",
+            role: "assistant",
+            content: this.messageParts.filter(Boolean),
+          },
         });
       }
 
@@ -331,13 +375,17 @@ export class AnthropicToResponsesTransformer {
   }
 
   private buildResponseObject(status: string): Record<string, unknown> {
+    const orderedOutput = [...this.outputItems.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, item]) => item);
+
     return {
       id: this.responseId,
       object: "response",
       created_at: this.created,
       model: this.model,
       status,
-      output: [],
+      output: orderedOutput,
     };
   }
 
