@@ -55,6 +55,8 @@ export class AnthropicToResponsesTransformer {
   };
   private accumulatedText: string = "";
   private emittedCreated: boolean = false;
+  /** Stores the stop_reason from message_delta for use in message_stop. */
+  private lastStopReason: string = "end_turn";
 
   constructor(model: string, responseId?: string) {
     this.model = model;
@@ -289,6 +291,7 @@ export class AnthropicToResponsesTransformer {
       // Emit output_item.done for the message item
       const stopReason = delta?.stop_reason as string | undefined;
       if (stopReason) {
+        this.lastStopReason = stopReason;
         const messageItem = {
           type: "message",
           id: `msg_${Date.now().toString(36)}`,
@@ -309,7 +312,7 @@ export class AnthropicToResponsesTransformer {
 
     if (eventType === "message_stop") {
       // Emit response.completed + response.done
-      const status = this.mapStatus("end_turn");
+      const status = this.mapStatus(this.lastStopReason);
       const response = this.buildResponseObject(status);
       response.usage = {
         input_tokens: this.usage.input_tokens,

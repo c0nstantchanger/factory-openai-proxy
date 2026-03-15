@@ -6,6 +6,15 @@ interface OpenAIChatRequest {
   messages?: Array<{
     role: string;
     content: string | Array<{ type: string; text?: string; image_url?: unknown }>;
+    tool_calls?: Array<{
+      id?: string;
+      type?: string;
+      function?: {
+        name?: string;
+        arguments?: string;
+      };
+    }>;
+    tool_call_id?: string;
   }>;
   stream?: boolean;
   max_tokens?: number;
@@ -42,6 +51,55 @@ export function transformToOpenAI(openaiRequest: OpenAIChatRequest): Record<stri
   const input: Array<Record<string, unknown>> = [];
   if (openaiRequest.messages && Array.isArray(openaiRequest.messages)) {
     for (const msg of openaiRequest.messages) {
+      // Skip system messages — they're extracted as instructions below
+      if (msg.role === "system" || msg.role === "developer") {
+        continue;
+      }
+
+      // Assistant message with tool_calls -> output_text (if any) + function_call items
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        // Emit text content first if present
+        if (typeof msg.content === "string" && msg.content) {
+          input.push({ type: "output_text", text: msg.content });
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "text" && part.text) {
+              input.push({ type: "output_text", text: part.text });
+            }
+          }
+        }
+        // Emit each tool_call as a function_call item
+        for (const toolCall of msg.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name) {
+            input.push({
+              type: "function_call",
+              id: toolCall.id || `call_${Date.now()}`,
+              call_id: toolCall.id || `call_${Date.now()}`,
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments || "{}",
+              status: "completed",
+            });
+          }
+        }
+        continue;
+      }
+
+      // Tool role message -> function_call_output item
+      if (msg.role === "tool") {
+        const outputText = typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.filter((p) => p.type === "text").map((p) => p.text || "").join("")
+            : "";
+        input.push({
+          type: "function_call_output",
+          call_id: msg.tool_call_id || `call_${Date.now()}`,
+          output: outputText,
+        });
+        continue;
+      }
+
+      // Regular user or assistant message
       const textType = msg.role === "assistant" ? "output_text" : "input_text";
       const imageType = msg.role === "assistant" ? "output_image" : "input_image";
 
@@ -61,7 +119,9 @@ export function transformToOpenAI(openaiRequest: OpenAIChatRequest): Record<stri
         }
       }
 
-      input.push({ role: msg.role, content });
+      if (content.length > 0) {
+        input.push({ role: msg.role, content });
+      }
     }
   }
 
@@ -77,22 +137,25 @@ export function transformToOpenAI(openaiRequest: OpenAIChatRequest): Record<stri
 
   // Extract system message as instructions, prepend system prompt
   const systemPrompt = getSystemPrompt();
-  const systemMessage = openaiRequest.messages?.find((m) => m.role === "system");
+  const systemMessages = openaiRequest.messages?.filter((m) => m.role === "system" || m.role === "developer") || [];
 
-  if (systemMessage) {
-    let userInstructions = "";
-    if (typeof systemMessage.content === "string") {
-      userInstructions = systemMessage.content;
-    } else if (Array.isArray(systemMessage.content)) {
-      userInstructions = systemMessage.content
-        .filter((p) => p.type === "text")
-        .map((p) => p.text || "")
-        .join("\n");
-    }
-    targetRequest.instructions = systemPrompt + userInstructions;
-    (targetRequest.input as Array<Record<string, unknown>>) = (
-      targetRequest.input as Array<Record<string, unknown>>
-    ).filter((m) => m.role !== "system");
+  if (systemMessages.length > 0) {
+    const userInstructions = systemMessages
+      .map((m) => {
+        if (typeof m.content === "string") return m.content;
+        if (Array.isArray(m.content)) {
+          return m.content
+            .filter((p) => p.type === "text")
+            .map((p) => p.text || "")
+            .join("\n");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    targetRequest.instructions = systemPrompt
+      ? systemPrompt + "\n" + userInstructions
+      : userInstructions;
   } else if (systemPrompt) {
     targetRequest.instructions = systemPrompt;
   }

@@ -40,7 +40,7 @@ router.get("/v1/models", (_req: Request, res: Response) => {
     const models = config.models.map((model) => ({
       id: model.id,
       object: "model" as const,
-      created: Date.now(),
+      created: Math.floor(Date.now() / 1000),
       owned_by: model.type,
       permission: [],
       root: model.id,
