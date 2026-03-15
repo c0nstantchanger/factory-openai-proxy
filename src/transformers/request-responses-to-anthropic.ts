@@ -49,6 +49,7 @@ interface ResponsesApiRequest {
   input?: string | ResponsesInput[];
   instructions?: string;
   tools?: ResponsesTool[];
+  tool_choice?: string | { type?: string; name?: string; function?: { name?: string } };
   max_output_tokens?: number;
   reasoning?: { effort?: string; summary?: string };
   stream?: boolean;
@@ -284,6 +285,11 @@ export function transformResponsesToAnthropic(req: ResponsesApiRequest): Record<
     anthropicRequest.tools = validateAnthropicTools(transformed as Array<Record<string, unknown>>);
   }
 
+  const anthropicToolChoice = transformToolChoice(req.tool_choice);
+  if (anthropicToolChoice) {
+    anthropicRequest.tool_choice = anthropicToolChoice;
+  }
+
   // --- Handle thinking/reasoning ---
   const reasoningLevel = getModelReasoning(req.model);
   if (reasoningLevel === "auto") {
@@ -403,6 +409,37 @@ function mergeConsecutiveSameRole(
     }
   }
   return merged;
+}
+
+function transformToolChoice(
+  toolChoice: ResponsesApiRequest["tool_choice"],
+): Record<string, unknown> | undefined {
+  if (!toolChoice) return undefined;
+
+  if (typeof toolChoice === "string") {
+    if (toolChoice === "auto" || toolChoice === "none") {
+      return { type: toolChoice };
+    }
+    if (toolChoice === "required") {
+      return { type: "any" };
+    }
+    return undefined;
+  }
+
+  const explicitName = toolChoice.name || toolChoice.function?.name;
+  if (toolChoice.type === "function" && explicitName) {
+    return { type: "tool", name: explicitName };
+  }
+
+  if (toolChoice.type === "auto" || toolChoice.type === "none") {
+    return { type: toolChoice.type };
+  }
+
+  if (toolChoice.type === "required") {
+    return { type: "any" };
+  }
+
+  return undefined;
 }
 
 /**
